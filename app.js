@@ -52,7 +52,7 @@ try {
     }
     // NODES END
 
-    if (process.env.KNX_CONNECTION_FORCE_TUNNELING && (process.env.KNX_CONNECTION_FORCE_TUNNELING !== 'true' || process.env.KNX_CONNECTION_FORCE_TUNNELING !== 'false')) {
+    if (process.env.KNX_CONNECTION_FORCE_TUNNELING && (process.env.KNX_CONNECTION_FORCE_TUNNELING !== 'true' && process.env.KNX_CONNECTION_FORCE_TUNNELING !== 'false')) {
         throw new Error('Environment variable KNX_CONNECTION_FORCE_TUNNELING must be either true or false.');
     }
     if (!process.env.KNX_CONNECTION_LOCAL_PORT_BINDING) {
@@ -97,7 +97,7 @@ try {
     });
     knxBridge.on('exit', (reason, exit_code) => {
         debug.error(reason);
-        process.exit(exit_code);
+        process.exit(typeof exit_code === 'number' ? exit_code : 1);
     });
     knxBridge.init();
 } catch (e) {
