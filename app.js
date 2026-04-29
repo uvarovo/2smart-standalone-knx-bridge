@@ -99,6 +99,37 @@ try {
         debug.error(reason);
         process.exit(exit_code);
     });
+
+    // Watchdog: some KNX/IP gateways (notably DIY/self-built ones) keep stale
+    // tunnel state for our source endpoint and silently ignore CONNECT_REQUEST
+    // until that state expires. The FSM in vendored knx.js never closes/rebinds
+    // the UDP socket, so retries from the same socket keep the gateway stuck.
+    // If we're disconnected (or never connected) for too long, exit so Docker
+    // restarts the container with a fresh socket and ephemeral source port —
+    // gateway sees a new client and accepts the connection.
+    const WATCHDOG_TIMEOUT_MS = parseInt(process.env.KNX_WATCHDOG_TIMEOUT_MS, 10) || 180000;
+    let knxConnected = false;
+    let lastConnectionEventAt = Date.now();
+
+    knxBridge.on('knx.connected', () => {
+        knxConnected = true;
+        lastConnectionEventAt = Date.now();
+    });
+    knxBridge.on('knx.disconnected', () => {
+        knxConnected = false;
+        lastConnectionEventAt = Date.now();
+    });
+
+    setInterval(() => {
+        if (knxConnected) return;
+        const stuckFor = Date.now() - lastConnectionEventAt;
+        if (stuckFor >= WATCHDOG_TIMEOUT_MS) {
+            debug.error(`KNX watchdog: not connected for ${Math.round(stuckFor / 1000)}s — exiting so Docker restarts the container with a fresh UDP socket.`);
+            console.error(new Date(), `KNX watchdog: stuck disconnected for ${Math.round(stuckFor / 1000)}s, exiting.`);
+            process.exit(1);
+        }
+    }, 30000).unref();
+
     knxBridge.init();
 } catch (e) {
     debug.error(e);
