@@ -55,13 +55,29 @@ try {
     if (process.env.KNX_CONNECTION_FORCE_TUNNELING && (process.env.KNX_CONNECTION_FORCE_TUNNELING !== 'true' || process.env.KNX_CONNECTION_FORCE_TUNNELING !== 'false')) {
         throw new Error('Environment variable KNX_CONNECTION_FORCE_TUNNELING must be either true or false.');
     }
-    if (!process.env.KNX_CONNECTION_LOCAL_PORT_BINDING) {
-        throw new Error('Please, specify environment variable KNX_CONNECTION_LOCAL_PORT_BINDING.');
+
+    // Source UDP-port binding for the KNX/IP tunnel.
+    // Some KNX/IP gateways (notably DIY/self-built ones) keep stale tunnel
+    // state keyed by the client's (source IP, source port) tuple. If the
+    // bridge ever crashes or the gateway is rebooted while the bridge keeps
+    // sending CONNECT_REQUEST from the same source port, the gateway can
+    // refuse new connections forever ("client already connected"). Letting
+    // the OS pick a fresh ephemeral port on every restart sidesteps that:
+    // the gateway sees a brand-new client and accepts the tunnel.
+    //
+    // Accepted values:
+    //   "auto" | unset | "0"        -> OS picks ephemeral port (recommended)
+    //   "<port>"                    -> fixed port, both receive and listen
+    //   "<receive>:<listen>"        -> separate receive/listen ports
+    const portBindingRaw = (process.env.KNX_CONNECTION_LOCAL_PORT_BINDING || 'auto').trim();
+    const ports = (portBindingRaw === 'auto' || portBindingRaw === '0' || portBindingRaw === '')
+        ? [ 0, 0 ]
+        : portBindingRaw.split(':').map((p) => parseInt(p, 10));
+
+    if (ports.length === 1) ports[1] = ports[0];
+    if (ports.some((p) => Number.isNaN(p) || p < 0 || p > 65535)) {
+        throw new Error(`Invalid KNX_CONNECTION_LOCAL_PORT_BINDING="${portBindingRaw}". Use "auto", "<port>", or "<receive>:<listen>".`);
     }
-
-    const ports = process.env.KNX_CONNECTION_LOCAL_PORT_BINDING.split(':');
-
-    if (ports.length===1) ports[1] = ports[0];
 
     const deviceBridgeConfig = {
         mqttConnection : {
