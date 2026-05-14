@@ -108,7 +108,15 @@ try {
     // eslint-disable-next-line no-inner-declarations
     const knxBridge = new KnxBridge({ ...deviceBridgeConfig, debug });
 
+    // Many KNX group addresses are write-only (sensors push GroupValue_Write,
+    // they don't respond to GroupValue_Read). Polling such GAs always times
+    // out with "No response(GroupValue_Response_X/Y/Z) timeout." — that's
+    // expected, not a real error. Suppress those from the error log so it
+    // doesn't get flooded; everything else still logs as before.
+    const isReadTimeout = (err) => err && typeof err.message === 'string'
+        && /No response\(GroupValue_Response_[\d/]+\) timeout\./.test(err.message);
     knxBridge.on('error', (error) => {
+        if (isReadTimeout(error)) return;
         debug.error(error);
     });
     knxBridge.on('exit', (reason, exit_code) => {
