@@ -42,12 +42,12 @@
             },
             {
                 "name": "KNX_CONNECTION_LOCAL_PORT_BINDING",
-                "type": "integer",
-                "label": "Local Port*",
-                "default": 3672,
+                "type": "string",
+                "label": "Local Port* (\"auto\" for OS-picked ephemeral, or 1024-65535, or \"<receive>:<listen>\")",
+                "default": "auto",
                 "validation": [
                     "required",
-                    "positive_integer"
+                    "string"
                 ]
             },
             {
