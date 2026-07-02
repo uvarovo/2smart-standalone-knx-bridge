@@ -29,6 +29,7 @@
     },
     "scripts": {
         "start": "node app",
+        "postinstall": "node patches/patch-knx-fsm.js",
         "test": "echo 'Test Passed'",
         "test:lint": "eslint lib app.js --ext js"
     },

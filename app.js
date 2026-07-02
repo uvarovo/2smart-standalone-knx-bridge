@@ -155,6 +155,17 @@ try {
     }, 30000).unref();
 
     knxBridge.init();
+
+    // Auto-start /set sidecar — spawns a child process with an independent
+    // MQTT client that handles /set commands directly.  This bypasses the
+    // EMQX 4.x delivery stall that affects the main homie-sdk client when
+    // the bridge has many mappings (>200 retained messages at startup).
+    try {
+        const { startSetSidecar } = require('./app_set_sidecar');
+        startSetSidecar(knxBridge);
+    } catch (sidecarErr) {
+        console.error('[SIDECAR] startup failed:', sidecarErr.message);
+    }
 } catch (e) {
     debug.error(e);
     process.exit(1);
