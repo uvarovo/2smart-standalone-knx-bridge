@@ -85,8 +85,26 @@ function startSetSidecar(bridge) {
 
     console.log('[SIDECAR] started pid=' + child.pid);
 
-    // FSM watchdog: if stuck in sendDatagram or sendTunnReq_waitACK for >2 s,
-    // force-reset to idle so the next write can proceed.
+    // FSM watchdog: recover the tunnelling state machine when it gets wedged
+    // waiting for a TUNNELING_ACK. Some KNX/IP routers (notably the one at the
+    // "zavod" site on the non-standard :3699 port) silently drop tunnel ACKs
+    // and desync the outbound sequence counter, leaving every subsequent write
+    // unacknowledged.
+    //
+    // The old behaviour reset the FSM to 'idle' after only 2 s. That was WRONG
+    // for two reasons:
+    //   1. It fired *before* knx.js's own ACK retry/reconnect cycle (~4 s), so
+    //      the built-in recovery never ran.
+    //   2. 'idle' keeps the same (now desynced) channel + seqnum alive, so the
+    //      next write fails too — the relay only switches "every other time".
+    //
+    // Now the threshold sits ABOVE the built-in cycle (default 8 s, tunable via
+    // KNX_FSM_STUCK_MS) so knx.js recovers on its own in the normal case, and
+    // when the watchdog does fire as a last resort it forces a full reconnect
+    // ('connecting' → DISCONNECT_REQUEST + CONNECT_REQUEST) which releases the
+    // stale channel on the router and resets seqnum (see connected._onEnter),
+    // so writes recover deterministically instead of staying broken.
+    var STUCK_MS = parseInt(process.env.KNX_FSM_STUCK_MS, 10) || 8000;
     var stuckSince = null;
     setInterval(function () {
         var conn = bridge.knxConnection && bridge.knxConnection.connection;
@@ -95,14 +113,15 @@ function startSetSidecar(bridge) {
         if (conn.state === 'sendDatagram' || conn.state === 'sendTunnReq_waitACK') {
             if (!stuckSince) {
                 stuckSince = Date.now();
-            } else if (Date.now() - stuckSince > 2000) {
-                console.log('[WATCHDOG] FSM stuck in ' + conn.state + ' for >2s, resetting to idle');
+            } else if (Date.now() - stuckSince > STUCK_MS) {
+                console.log('[WATCHDOG] FSM stuck in ' + conn.state + ' for >' +
+                    Math.round(STUCK_MS / 1000) + 's, forcing tunnel reconnect');
                 if (conn.tunnelingAckTimer) {
                     clearTimeout(conn.tunnelingAckTimer);
                     conn.tunnelingAckTimer = null;
                 }
                 conn.numberOfWaitingACKFORTunnellingReqAttempts = 0;
-                conn.transition('idle');
+                conn.transition('connecting');
                 stuckSince = null;
             }
         } else {
