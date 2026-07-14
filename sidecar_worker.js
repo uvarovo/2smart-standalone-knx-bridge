@@ -139,9 +139,21 @@ client.on('connect', function () {
 });
 
 client.on('message', function (topic, msg) {
-    console.error('[SIDECAR-W] got:', topic);
-    // Forward to parent process (app_set_sidecar.js)
-    process.send({ topic: topic, payload: msg.toString() });
+    var payload = msg.toString();
+    // Publish the homie state directly and immediately from THIS client, which
+    // reliably received the command. The main homie process's own client is
+    // flaky (it intermittently misses commands and delivers its state publishes
+    // seconds late/out of order, reverting the UI), so this worker is the sole
+    // authoritative state publisher. Doing it right here — instead of via a
+    // round trip through the parent — keeps state reflection exactly as reliable
+    // as command reception. Retained + qos1 so a page refresh shows the value.
+    if (/\/set$/.test(topic)) {
+        client.publish(topic.replace(/\/set$/, ''), payload, { retain: true, qos: 1 }, function (e) {
+            if (e) console.error('[SIDECAR-W] state publish error: ' + e.message);
+        });
+    }
+    // Forward to parent (app_set_sidecar.js) which drives the KNX bus write.
+    process.send({ topic: topic, payload: payload });
 });
 
 client.on('error', function (err) {
