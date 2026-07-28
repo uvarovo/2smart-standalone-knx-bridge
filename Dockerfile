@@ -18,4 +18,11 @@ COPY sidecar_worker.js sidecar_worker.js
 # device $state semantics across rebuilds.
 RUN npm ci --production
 
+# Apply node_modules patches explicitly. `npm ci` runs as root with no WORKDIR
+# here, so npm de-escalates lifecycle scripts to the "nobody" user and silently
+# skips the `postinstall` hook ("cannot run in wd ... (wd=/)"). Running the
+# patch scripts directly guarantees they are applied on every build. Both are
+# idempotent and no-op if already patched.
+RUN node patches/patch-knx-fsm.js && node patches/patch-homie-boolean.js
+
 CMD npm start
