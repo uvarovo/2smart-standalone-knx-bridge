@@ -1,4 +1,4 @@
-FROM node:12.5-alpine
+FROM drop.uvarovo.net:32102/uvarovo/node:12.5-alpine
 
 RUN apk update \
     && apk upgrade && apk add git
