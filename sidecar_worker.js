@@ -276,7 +276,14 @@ client.on('message', function (topic, msg, packet) {
         // Reflect the freshly commanded value so a repair pass never overwrites it.
         if (boolTopics[stateTopic]) retainedBool[stateTopic] = stateValue;
     }
-    // Forward to parent (app_set_sidecar.js) which drives the KNX bus write.
+    // Forward ONLY commands to the parent (app_set_sidecar.js), which drives the
+    // KNX bus write. Messages from the '+/+' value-topic subscription above must
+    // never be forwarded: the parent maps <node>/<prop> to a group address and
+    // writes it, so a plain state publish would be echoed straight back onto the
+    // bus as a GroupValue_Write. Live deliveries carry retain=false, so they slip
+    // past the retained-observation branch above — meaning every sensor refresh
+    // and every repairBooleanState() publish used to write to the bus.
+    if (!/\/set$/.test(topic)) return;
     process.send({ topic: topic, payload: payload });
 });
 
