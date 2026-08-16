@@ -1,4 +1,5 @@
 require('events').defaultMaxListeners = 100;
+const dgram = require('dgram');
 const Debugger = require('homie-sdk/lib/utils/debugger');
 const KnxBridge = require('./lib/knx-bridge/bridge');
 // const KnxLog = require('./lib/knx/src/KnxLog');
@@ -131,9 +132,50 @@ try {
     // If we're disconnected (or never connected) for too long, exit so Docker
     // restarts the container with a fresh socket and ephemeral source port —
     // gateway sees a new client and accepts the connection.
+    //
+    // A restart only helps while the gateway is actually reachable. When it is
+    // offline (powered down, unplugged, IP changed) exiting every few minutes
+    // becomes an endless container restart loop that loads the host and eats
+    // the gateway's tunnel slots once it comes back. So probe the gateway first
+    // and only restart when it answers; while it stays silent, idle in place and
+    // let the FSM keep retrying.
     const WATCHDOG_TIMEOUT_MS = parseInt(process.env.KNX_WATCHDOG_TIMEOUT_MS, 10) || 180000;
+    // Safety valve for gateways that never answer DESCRIPTION_REQUEST: they'd
+    // look permanently offline, so still allow an occasional socket refresh.
+    const WATCHDOG_OFFLINE_RESTART_MS = parseInt(process.env.KNX_WATCHDOG_OFFLINE_RESTART_MS, 10) || 1800000;
+    const OFFLINE_LOG_INTERVAL_MS = 300000;
+
+    const watchdogState = { offlineSince: null, loggedAt: 0, busy: false };
+
     let knxConnected = false;
     let lastConnectionEventAt = Date.now();
+
+    // Resolves true when the gateway answers a KNXnet/IP DESCRIPTION_REQUEST.
+    const probeGateway = (ipAddr, ipPort, timeoutMs) => new Promise((resolve) => {
+        const socket = dgram.createSocket('udp4');
+
+        let settled = false;
+        const finish = (alive) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            try {
+                socket.close();
+            } catch (e) {
+                // socket already closed
+            }
+            resolve(alive);
+        };
+        const timer = setTimeout(() => finish(false), timeoutMs);
+        // header (0x0203 DESCRIPTION_REQUEST, 14 bytes) + unused HPAI 0.0.0.0:0
+        const request = Buffer.from([ 0x06, 0x10, 0x02, 0x03, 0x00, 0x0e, 0x08, 0x01, 0, 0, 0, 0, 0, 0 ]);
+
+        socket.on('message', () => finish(true));
+        socket.on('error', () => finish(false));
+        socket.send(request, ipPort, ipAddr, (err) => {
+            if (err) finish(false);
+        });
+    });
 
     knxBridge.on('knx.connected', () => {
         knxConnected = true;
@@ -144,13 +186,44 @@ try {
         lastConnectionEventAt = Date.now();
     });
 
-    setInterval(() => {
-        if (knxConnected) return;
+    setInterval(async () => {
+        if (knxConnected) {
+            watchdogState.offlineSince = null;
+            watchdogState.loggedAt = 0;
+
+            return;
+        }
+        if (watchdogState.busy) return;
         const stuckFor = Date.now() - lastConnectionEventAt;
-        if (stuckFor >= WATCHDOG_TIMEOUT_MS) {
-            debug.error(`KNX watchdog: not connected for ${Math.round(stuckFor / 1000)}s — exiting so Docker restarts the container with a fresh UDP socket.`);
-            console.error(new Date(), `KNX watchdog: stuck disconnected for ${Math.round(stuckFor / 1000)}s, exiting.`);
-            process.exit(1);
+
+        if (stuckFor < WATCHDOG_TIMEOUT_MS) return;
+
+        watchdogState.busy = true;
+        try {
+            const { ipAddr, ipPort } = deviceBridgeConfig.knxConnection;
+            const gateway = `${ipAddr}:${ipPort}`;
+            const alive = ipAddr ? await probeGateway(ipAddr, ipPort, 4000) : true;
+
+            if (alive) {
+                debug.error(`KNX watchdog: not connected for ${Math.round(stuckFor / 1000)}s while gateway ${gateway} answers — exiting so Docker restarts the container with a fresh UDP socket.`);
+                console.error(new Date(), `KNX watchdog: stuck disconnected for ${Math.round(stuckFor / 1000)}s, exiting.`);
+                process.exit(1);
+            }
+
+            if (!watchdogState.offlineSince) watchdogState.offlineSince = Date.now();
+            const offlineFor = Date.now() - watchdogState.offlineSince;
+
+            if (Date.now() - watchdogState.loggedAt >= OFFLINE_LOG_INTERVAL_MS) {
+                watchdogState.loggedAt = Date.now();
+                console.error(new Date(), `KNX watchdog: gateway ${gateway} unreachable for ${Math.round(offlineFor / 1000)}s — staying up and retrying instead of restarting.`);
+            }
+
+            if (offlineFor >= WATCHDOG_OFFLINE_RESTART_MS) {
+                console.error(new Date(), `KNX watchdog: gateway ${gateway} silent for ${Math.round(offlineFor / 1000)}s, exiting once to refresh the UDP socket.`);
+                process.exit(1);
+            }
+        } finally {
+            watchdogState.busy = false;
         }
     }, 30000).unref();
 
