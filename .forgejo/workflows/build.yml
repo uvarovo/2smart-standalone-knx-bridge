@@ -1,0 +1,38 @@
+name: Build & Publish Docker image (Forgejo)
+
+on:
+  push:
+    branches:
+      - master
+      - main
+      - 'devin/**'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Login to drop registry
+        run: echo "${{ secrets.DROP_REGISTRY_TOKEN }}" | docker login drop.uvarovo.net:32102 -u devin --password-stdin
+
+      - name: Build & push
+        run: |
+          set -eu
+          IMG=drop.uvarovo.net:32102/uvarovo/${GITHUB_REPOSITORY##*/}
+          SHA=$(echo "${GITHUB_SHA}" | cut -c1-7)
+          docker build -t "$IMG:sha-$SHA" .
+          docker push "$IMG:sha-$SHA"
+          if [ "${GITHUB_REF}" = "refs/heads/master" ] || [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            for t in market latest; do
+              docker tag "$IMG:sha-$SHA" "$IMG:$t"
+              docker push "$IMG:$t"
+            done
+          fi
+
+      - name: Logout
+        if: always()
+        run: docker logout drop.uvarovo.net:32102 || true
